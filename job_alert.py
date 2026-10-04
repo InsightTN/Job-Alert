@@ -18,7 +18,7 @@ import requests
 SEEN_FILE = Path("seen.json")
 HEADERS = {"User-Agent": "personal-job-alert-bot/1.0"}
 TIMEOUT = 25
-MAX_AGE_DAYS = 14      # ignore posts older than this (stale posts are often ghost jobs)
+MAX_AGE_DAYS = 7       # ignore posts older than this (stale posts are often ghost jobs)
 MIN_MATCH = 45         # minimum CV-match score (0-100)
 MIN_LEGIT = 70         # minimum legitimacy score (0-100)
 MAX_PER_DIGEST = 25
@@ -96,18 +96,17 @@ def get_json(url, **kw):
 
 def fetch_remotive():
     out = []
-    for q in ("data analyst", "data scientist", "business intelligence"):
-        d = get_json("https://remotive.com/api/remote-jobs", params={"search": q})
-        for j in d.get("jobs", []):
-            out.append(job("remotive", j["id"], j["title"], j["company_name"],
-                           j.get("candidate_required_location"), j["url"],
-                           j.get("publication_date"), j.get("description")))
+    d = get_json("https://remotive.com/api/remote-jobs", params={"category": "data"})
+    for j in d.get("jobs", []):
+        out.append(job("remotive", j["id"], j["title"], j["company_name"],
+                       j.get("candidate_required_location"), j["url"],
+                       j.get("publication_date"), j.get("description")))
     return out
 
 
 def fetch_arbeitnow():
     out = []
-    for page in (1, 2, 3):
+    for page in (1, 2):
         d = get_json("https://www.arbeitnow.com/api/job-board-api", params={"page": page})
         for j in d.get("data", []):
             out.append(job("arbeitnow", j["slug"], j["title"], j["company_name"],
@@ -151,7 +150,16 @@ def fetch_jooble():
     return out
 
 
-FETCHERS = [fetch_remotive, fetch_arbeitnow, fetch_remoteok, fetch_jobicy, fetch_jooble]
+# (fetcher, minimum minutes between calls). Keeps us polite to free APIs even
+# though the workflow runs every 10 minutes.
+FETCHERS = [
+    (fetch_remoteok, 10),
+    (fetch_arbeitnow, 10),
+    (fetch_jooble, 10),
+    (fetch_jobicy, 60),
+    (fetch_remotive, 360),
+]
+STATE_FILE = Path("state.json")
 
 
 # ---------- FILTERING & SCORING ----------
@@ -287,14 +295,20 @@ def main():
     seen = json.loads(SEEN_FILE.read_text()) if SEEN_FILE.exists() else {}
     seen = {k: v for k, v in seen.items() if (now - parse_dt(v)).days < 60}
 
+    state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
     jobs = []
-    for f in FETCHERS:
+    for f, every_min in FETCHERS:
+        last = parse_dt(state.get(f.__name__))
+        if last and (now - last) < timedelta(minutes=every_min - 2):
+            continue  # not due yet
         try:
             got = f()
             print(f"{f.__name__}: {len(got)} jobs")
             jobs += got
+            state[f.__name__] = now.isoformat()
         except Exception as e:  # one broken source must not stop the run
             print(f"{f.__name__} failed: {e}", file=sys.stderr)
+    STATE_FILE.write_text(json.dumps(state, indent=1))
 
     picks = process(jobs, seen, now)
     print(f"{len(picks)} new matches")
