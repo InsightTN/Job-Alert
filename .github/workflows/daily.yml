@@ -1,10 +1,13 @@
-name: Daily job alerts
+name: Job alerts
 on:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "*/10 * * * *"   # every 10 minutes
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: job-alerts
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -13,6 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - run: pip install -r requirements.txt
       - run: python job_alert.py
         env:
@@ -23,9 +27,9 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-      - name: Save seen jobs
+      - name: Save state
         run: |
           git config user.name "job-alert-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add seen.json || true
-          git diff --cached --quiet || (git commit -m "update seen jobs" && git push)
+          git add seen.json state.json || true
+          git diff --cached --quiet || (git commit -q -m "update state" && git pull --rebase -q && git push) || true
